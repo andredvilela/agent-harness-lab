@@ -126,3 +126,5 @@ Shell environment variables override `.env`. Every execution creates an immutabl
 ## Specs
 
 Stage specifications from Stage 01 onward live in `specs/`.
+
+Stage 01 tool calling runs through the same AgentLoop on both the OpenAI Responses API and the Anthropic Messages API. See `specs/01a_anthropic_tool_calling_adapter.md`.

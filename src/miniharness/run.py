@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +27,20 @@ def infer_stage(task_file: Path) -> str:
     if task_file.resolve().parent.name == "01_read_only_agent":
         return "01_read_only_agent"
     return "00_model_only"
+
+
+def emit_console(text: str) -> None:
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        buffer = getattr(sys.stdout, "buffer", None)
+        payload = (text + "\n").encode(encoding, errors="replace")
+        if buffer is not None:
+            buffer.write(payload)
+            buffer.flush()
+            return
+        sys.stdout.write(payload.decode(encoding, errors="replace"))
 
 
 def _write_summary(run_dir: Path, summary: dict) -> None:
@@ -68,8 +83,8 @@ def run_stage_00(task: str, config, events: EventLogger, run_dir: Path) -> None:
         },
     )
     events.emit("run_finished", outcome="ungraded")
-    print(result.text)
-    print(f"\nRun artifacts: {run_dir}")
+    emit_console(result.text)
+    emit_console(f"\nRun artifacts: {run_dir}")
 
 
 def run_stage_01(task: str, config, events: EventLogger, run_dir: Path) -> None:
@@ -108,10 +123,10 @@ def run_stage_01(task: str, config, events: EventLogger, run_dir: Path) -> None:
         },
     )
     events.emit("run_finished", outcome=result.outcome)
-    print(result.text)
+    emit_console(result.text)
     if result.error:
-        print(f"\nRun error: {result.error}")
-    print(f"\nRun artifacts: {run_dir}")
+        emit_console(f"\nRun error: {result.error}")
+    emit_console(f"\nRun artifacts: {run_dir}")
 
 
 def main() -> None:

@@ -61,6 +61,88 @@ def _anthropic_tools(tools: list[ToolDefinition]) -> list[dict[str, Any]]:
     ]
 
 
+def _dump_anthropic_block(block: Any) -> Any:
+    if hasattr(block, "model_dump"):
+        return block.model_dump(mode="json", exclude_none=True)
+    if isinstance(block, dict):
+        return dict(block)
+    if hasattr(block, "__dict__"):
+        dumped = {
+            key: value
+            for key, value in vars(block).items()
+            if not key.startswith("_") and value is not None
+        }
+        return dumped
+    return block
+
+
+def _tool_use_arguments(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return dict(raw)
+    return {}
+
+
+def _anthropic_request_kwargs(
+    *,
+    model: str,
+    max_tokens: int,
+    messages: list[Message],
+    tools: list[ToolDefinition] | None,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": _messages_to_anthropic(messages),
+    }
+    if tools:
+        kwargs["tools"] = _anthropic_tools(tools)
+    return kwargs
+
+
+def _anthropic_turn_from_content(content: Any, usage: Any = None) -> ModelTurn:
+    text_parts: list[str] = []
+    tool_calls: list[ToolCall] = []
+    raw_blocks: list[Any] = []
+
+    for block in content:
+        raw_blocks.append(_dump_anthropic_block(block))
+        block_type = getattr(block, "type", None)
+        if block_type is None and isinstance(block, dict):
+            block_type = block.get("type")
+
+        if block_type == "text":
+            text = getattr(block, "text", None)
+            if text is None and isinstance(block, dict):
+                text = block.get("text", "")
+            text_parts.append(text or "")
+            continue
+
+        if block_type == "tool_use":
+            if isinstance(block, dict):
+                tool_id = block["id"]
+                name = block["name"]
+                arguments = _tool_use_arguments(block.get("input"))
+            else:
+                tool_id = block.id
+                name = block.name
+                arguments = _tool_use_arguments(getattr(block, "input", None))
+            tool_calls.append(
+                ToolCall(
+                    id=tool_id,
+                    name=name,
+                    arguments=arguments,
+                )
+            )
+
+    return ModelTurn(
+        text="".join(text_parts),
+        tool_calls=tuple(tool_calls),
+        input_tokens=getattr(usage, "input_tokens", None),
+        output_tokens=getattr(usage, "output_tokens", None),
+        raw_output=tuple(raw_blocks),
+    )
+
+
 def _messages_to_openai_input(messages: list[Message]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for message in messages:
@@ -129,14 +211,14 @@ def _messages_to_anthropic(messages: list[Message]) -> list[dict[str, Any]]:
                 if result is None:
                     index += 1
                     continue
-                block = {
-                    "type": "tool_result",
-                    "tool_use_id": result.tool_call_id,
-                    "content": result.output,
-                }
-                if not result.ok:
-                    block["is_error"] = True
-                results.append(block)
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": result.tool_call_id,
+                        "content": result.output,
+                        "is_error": not result.ok,
+                    }
+                )
                 index += 1
             out.append({"role": "user", "content": results})
             continue
@@ -238,40 +320,16 @@ class AnthropicModelClient:
         messages: list[Message],
         tools: list[ToolDefinition],
     ) -> ModelTurn:
-        kwargs: dict[str, Any] = {
-            "model": self.model,
-            "max_tokens": self.max_output_tokens,
-            "messages": _messages_to_anthropic(messages),
-        }
-        if tools:
-            kwargs["tools"] = _anthropic_tools(tools)
-
+        kwargs = _anthropic_request_kwargs(
+            model=self.model,
+            max_tokens=self.max_output_tokens,
+            messages=messages,
+            tools=tools,
+        )
         response = self.client.messages.create(**kwargs)
-        usage = getattr(response, "usage", None)
-
-        text_parts: list[str] = []
-        tool_calls: list[ToolCall] = []
-        for block in response.content:
-            block_type = getattr(block, "type", None)
-            if block_type == "text":
-                text_parts.append(block.text)
-            elif block_type == "tool_use":
-                arguments = block.input if isinstance(block.input, dict) else {}
-                tool_calls.append(
-                    ToolCall(
-                        id=block.id,
-                        name=block.name,
-                        arguments=arguments,
-                    )
-                )
-
-        raw_output = tuple(_dump_item(block) for block in response.content)
-        return ModelTurn(
-            text="".join(text_parts),
-            tool_calls=tuple(tool_calls),
-            input_tokens=getattr(usage, "input_tokens", None),
-            output_tokens=getattr(usage, "output_tokens", None),
-            raw_output=raw_output,
+        return _anthropic_turn_from_content(
+            response.content,
+            getattr(response, "usage", None),
         )
 
 
