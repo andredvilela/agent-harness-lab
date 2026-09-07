@@ -17,9 +17,16 @@ class ModelConfig:
 
 
 @dataclass(frozen=True)
+class AgentConfig:
+    max_turns: int
+
+
+@dataclass(frozen=True)
 class LabConfig:
     runs_dir: Path
+    repo_root: Path
     model: ModelConfig
+    agent: AgentConfig
 
 
 def load_config() -> LabConfig:
@@ -32,13 +39,19 @@ def load_config() -> LabConfig:
 
     profile = os.getenv("MODEL_PROFILE", "openai_luna")
     model_raw = raw["models"][profile]
+    lab_raw = raw.get("lab", {})
+    agent_raw = raw.get("agent", {})
 
     return LabConfig(
-        runs_dir=Path(raw.get("lab", {}).get("runs_dir", "runs")),
+        runs_dir=Path(lab_raw.get("runs_dir", "runs")),
+        repo_root=Path(lab_raw.get("repo_root", ".")).resolve(),
         model=ModelConfig(
             profile=profile,
             provider=model_raw["provider"],
             model=model_raw["model"],
             max_output_tokens=model_raw["max_output_tokens"],
+        ),
+        agent=AgentConfig(
+            max_turns=int(agent_raw.get("max_turns", 10)),
         ),
     )

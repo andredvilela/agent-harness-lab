@@ -1,10 +1,14 @@
+from __future__ import annotations
+
+import json
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any
 
 from anthropic import Anthropic
 from openai import OpenAI
 
 from .config import ModelConfig
+from .types import Message, ModelTurn, ToolCall, ToolDefinition
 
 
 @dataclass(frozen=True)
@@ -14,9 +18,130 @@ class ModelResult:
     output_tokens: int | None
 
 
-class ModelClient(Protocol):
-    def generate(self, prompt: str) -> ModelResult:
-        ...
+def _dump_item(item: Any) -> Any:
+    if hasattr(item, "model_dump"):
+        return item.model_dump(mode="json", exclude_none=True)
+    if isinstance(item, dict):
+        return item
+    return item
+
+
+def _parse_json_object(raw: str) -> dict[str, Any]:
+    if not raw or not str(raw).strip():
+        return {}
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _openai_tools(tools: list[ToolDefinition]) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "function",
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.parameters,
+        }
+        for tool in tools
+    ]
+
+
+def _anthropic_tools(tools: list[ToolDefinition]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": tool.name,
+            "description": tool.description,
+            "input_schema": tool.parameters,
+        }
+        for tool in tools
+    ]
+
+
+def _messages_to_openai_input(messages: list[Message]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for message in messages:
+        if message.role == "user":
+            items.append({"role": "user", "content": message.content})
+            continue
+        if message.role == "assistant":
+            if message.raw_output:
+                items.extend(dict(item) for item in message.raw_output)
+            else:
+                if message.content:
+                    items.append({"role": "assistant", "content": message.content})
+                for call in message.tool_calls:
+                    items.append(
+                        {
+                            "type": "function_call",
+                            "call_id": call.id,
+                            "name": call.name,
+                            "arguments": json.dumps(call.arguments),
+                        }
+                    )
+            continue
+        if message.role == "tool" and message.tool_result is not None:
+            items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": message.tool_result.tool_call_id,
+                    "output": message.tool_result.output,
+                }
+            )
+    return items
+
+
+def _messages_to_anthropic(messages: list[Message]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        if message.role == "user":
+            out.append({"role": "user", "content": message.content})
+            index += 1
+            continue
+        if message.role == "assistant":
+            if message.raw_output:
+                content: Any = list(message.raw_output)
+            else:
+                content = []
+                if message.content:
+                    content.append({"type": "text", "text": message.content})
+                for call in message.tool_calls:
+                    content.append(
+                        {
+                            "type": "tool_use",
+                            "id": call.id,
+                            "name": call.name,
+                            "input": call.arguments,
+                        }
+                    )
+            out.append({"role": "assistant", "content": content})
+            index += 1
+            continue
+        if message.role == "tool":
+            results = []
+            while index < len(messages) and messages[index].role == "tool":
+                result = messages[index].tool_result
+                if result is None:
+                    index += 1
+                    continue
+                block = {
+                    "type": "tool_result",
+                    "tool_use_id": result.tool_call_id,
+                    "content": result.output,
+                }
+                if not result.ok:
+                    block["is_error"] = True
+                results.append(block)
+                index += 1
+            out.append({"role": "user", "content": results})
+            continue
+        index += 1
+    return out
 
 
 class OpenAIModelClient:
@@ -37,6 +162,43 @@ class OpenAIModelClient:
             text=response.output_text,
             input_tokens=getattr(usage, "input_tokens", None),
             output_tokens=getattr(usage, "output_tokens", None),
+        )
+
+    def generate_turn(
+        self,
+        messages: list[Message],
+        tools: list[ToolDefinition],
+    ) -> ModelTurn:
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "input": _messages_to_openai_input(messages),
+            "max_output_tokens": self.max_output_tokens,
+        }
+        if tools:
+            kwargs["tools"] = _openai_tools(tools)
+
+        response = self.client.responses.create(**kwargs)
+        usage = getattr(response, "usage", None)
+
+        tool_calls: list[ToolCall] = []
+        for item in response.output:
+            if getattr(item, "type", None) != "function_call":
+                continue
+            tool_calls.append(
+                ToolCall(
+                    id=item.call_id,
+                    name=item.name,
+                    arguments=_parse_json_object(item.arguments),
+                )
+            )
+
+        raw_output = tuple(_dump_item(item) for item in response.output)
+        return ModelTurn(
+            text=response.output_text or "",
+            tool_calls=tuple(tool_calls),
+            input_tokens=getattr(usage, "input_tokens", None),
+            output_tokens=getattr(usage, "output_tokens", None),
+            raw_output=raw_output,
         )
 
 
@@ -71,8 +233,49 @@ class AnthropicModelClient:
             output_tokens=getattr(usage, "output_tokens", None),
         )
 
+    def generate_turn(
+        self,
+        messages: list[Message],
+        tools: list[ToolDefinition],
+    ) -> ModelTurn:
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": self.max_output_tokens,
+            "messages": _messages_to_anthropic(messages),
+        }
+        if tools:
+            kwargs["tools"] = _anthropic_tools(tools)
 
-def create_model_client(config: ModelConfig) -> ModelClient:
+        response = self.client.messages.create(**kwargs)
+        usage = getattr(response, "usage", None)
+
+        text_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+        for block in response.content:
+            block_type = getattr(block, "type", None)
+            if block_type == "text":
+                text_parts.append(block.text)
+            elif block_type == "tool_use":
+                arguments = block.input if isinstance(block.input, dict) else {}
+                tool_calls.append(
+                    ToolCall(
+                        id=block.id,
+                        name=block.name,
+                        arguments=arguments,
+                    )
+                )
+
+        raw_output = tuple(_dump_item(block) for block in response.content)
+        return ModelTurn(
+            text="".join(text_parts),
+            tool_calls=tuple(tool_calls),
+            input_tokens=getattr(usage, "input_tokens", None),
+            output_tokens=getattr(usage, "output_tokens", None),
+            raw_output=raw_output,
+        )
+
+
+def create_model_client(config: ModelConfig) -> OpenAIModelClient | AnthropicModelClient:
     if config.provider == "openai":
         return OpenAIModelClient(
             model=config.model,

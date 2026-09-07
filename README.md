@@ -123,8 +123,6 @@ python -m miniharness.run scenarios/00_model_only/task.md
 
 Shell environment variables override `.env`. Every execution creates an immutable folder under `runs/`.
 
-## Stage 1 has not started
+## Specs
 
-Do not add repository tools, an agent loop, or any other harness primitive yet.
-
-The next primitive will be chosen only after Stage 0B has been observed.
+Stage specifications from Stage 01 onward live in `specs/`.

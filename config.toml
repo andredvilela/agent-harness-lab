@@ -1,5 +1,9 @@
 [lab]
 runs_dir = "runs"
+repo_root = "."
+
+[agent]
+max_turns = 10
 
 [models.openai_luna]
 provider = "openai"
