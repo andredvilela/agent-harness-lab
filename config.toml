@@ -1,0 +1,6 @@
+[lab]
+runs_dir = "runs"
+
+[models.openai_default]
+provider = "openai"
+model = "SEU_MODEL_ID_AQUI"
