@@ -68,4 +68,4 @@ Possible failure modes:
 - explains that it cannot inspect the repository;
 - claims success without evidence.
 
-Record the observed failure before proceeding to Stage 01.
+Record the observed failure before proceeding to Stage 01
