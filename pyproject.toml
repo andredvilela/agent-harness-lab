@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-harness-lab"
+version = "0.0.1"
+description = "Minimal progressive lab for learning agent harness engineering."
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=1.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
