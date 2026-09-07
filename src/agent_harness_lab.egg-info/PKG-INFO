@@ -4,4 +4,5 @@ Version: 0.0.1
 Summary: Minimal progressive lab for learning agent harness engineering.
 Requires-Python: >=3.12
 Requires-Dist: openai>=1.0.0
+Requires-Dist: anthropic
 Requires-Dist: python-dotenv>=1.0.0
