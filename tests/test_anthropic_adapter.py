@@ -12,6 +12,7 @@ from miniharness.model import (
     _messages_to_anthropic,
 )
 from miniharness.tools import LIST_FILES, READ_FILE
+from miniharness.trace import LLMTracer
 from miniharness.types import Message, ToolCall, ToolResult
 
 
@@ -291,6 +292,7 @@ class AnthropicAdapterTests(unittest.TestCase):
         client = AnthropicModelClient.__new__(AnthropicModelClient)
         client.model = "claude-haiku-4-5-20251001"
         client.max_output_tokens = 128
+        client.tracer = LLMTracer(mode="off")
         fake_messages = Mock()
         fake_messages.create.return_value = _ns(
             content=[_ns(type="text", text="no tools here")],
@@ -312,6 +314,7 @@ class AnthropicAdapterTests(unittest.TestCase):
         client = AnthropicModelClient.__new__(AnthropicModelClient)
         client.model = "claude-haiku-4-5-20251001"
         client.max_output_tokens = 128
+        client.tracer = LLMTracer(mode="off")
         fake_messages = Mock()
         fake_messages.create.return_value = _ns(
             content=[

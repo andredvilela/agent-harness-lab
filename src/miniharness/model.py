@@ -8,6 +8,7 @@ from anthropic import Anthropic
 from openai import OpenAI
 
 from .config import ModelConfig
+from .trace import LLMTracer
 from .types import Message, ModelTurn, ToolCall, ToolDefinition
 
 
@@ -227,16 +228,37 @@ def _messages_to_anthropic(messages: list[Message]) -> list[dict[str, Any]]:
 
 
 class OpenAIModelClient:
-    def __init__(self, model: str, max_output_tokens: int):
+    def __init__(
+        self,
+        model: str,
+        max_output_tokens: int,
+        tracer: LLMTracer | None = None,
+    ):
         self.model = model
         self.max_output_tokens = max_output_tokens
+        self.tracer = tracer or LLMTracer(mode="off")
         self.client = OpenAI()
 
     def generate(self, prompt: str) -> ModelResult:
-        response = self.client.responses.create(
+        payload = {
+            "model": self.model,
+            "input": prompt,
+            "max_output_tokens": self.max_output_tokens,
+        }
+        self.tracer.request(
+            turn=1,
+            provider="openai",
             model=self.model,
-            input=prompt,
-            max_output_tokens=self.max_output_tokens,
+            endpoint="responses",
+            payload=payload,
+        )
+        response = self.client.responses.create(**payload)
+        self.tracer.response(
+            turn=1,
+            provider="openai",
+            model=self.model,
+            endpoint="responses",
+            payload=response,
         )
 
         usage = getattr(response, "usage", None)
@@ -250,6 +272,8 @@ class OpenAIModelClient:
         self,
         messages: list[Message],
         tools: list[ToolDefinition],
+        *,
+        turn: int | None = None,
     ) -> ModelTurn:
         kwargs: dict[str, Any] = {
             "model": self.model,
@@ -259,7 +283,22 @@ class OpenAIModelClient:
         if tools:
             kwargs["tools"] = _openai_tools(tools)
 
+        trace_turn = 1 if turn is None else turn
+        self.tracer.request(
+            turn=trace_turn,
+            provider="openai",
+            model=self.model,
+            endpoint="responses",
+            payload=kwargs,
+        )
         response = self.client.responses.create(**kwargs)
+        self.tracer.response(
+            turn=trace_turn,
+            provider="openai",
+            model=self.model,
+            endpoint="responses",
+            payload=response,
+        )
         usage = getattr(response, "usage", None)
 
         tool_calls: list[ToolCall] = []
@@ -285,21 +324,42 @@ class OpenAIModelClient:
 
 
 class AnthropicModelClient:
-    def __init__(self, model: str, max_output_tokens: int):
+    def __init__(
+        self,
+        model: str,
+        max_output_tokens: int,
+        tracer: LLMTracer | None = None,
+    ):
         self.model = model
         self.max_output_tokens = max_output_tokens
+        self.tracer = tracer or LLMTracer(mode="off")
         self.client = Anthropic()
 
     def generate(self, prompt: str) -> ModelResult:
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=self.max_output_tokens,
-            messages=[
+        payload = {
+            "model": self.model,
+            "max_tokens": self.max_output_tokens,
+            "messages": [
                 {
                     "role": "user",
                     "content": prompt,
                 }
             ],
+        }
+        self.tracer.request(
+            turn=1,
+            provider="anthropic",
+            model=self.model,
+            endpoint="messages",
+            payload=payload,
+        )
+        response = self.client.messages.create(**payload)
+        self.tracer.response(
+            turn=1,
+            provider="anthropic",
+            model=self.model,
+            endpoint="messages",
+            payload=response,
         )
 
         text_parts = [
@@ -319,6 +379,8 @@ class AnthropicModelClient:
         self,
         messages: list[Message],
         tools: list[ToolDefinition],
+        *,
+        turn: int | None = None,
     ) -> ModelTurn:
         kwargs = _anthropic_request_kwargs(
             model=self.model,
@@ -326,24 +388,44 @@ class AnthropicModelClient:
             messages=messages,
             tools=tools,
         )
+        trace_turn = 1 if turn is None else turn
+        self.tracer.request(
+            turn=trace_turn,
+            provider="anthropic",
+            model=self.model,
+            endpoint="messages",
+            payload=kwargs,
+        )
         response = self.client.messages.create(**kwargs)
+        self.tracer.response(
+            turn=trace_turn,
+            provider="anthropic",
+            model=self.model,
+            endpoint="messages",
+            payload=response,
+        )
         return _anthropic_turn_from_content(
             response.content,
             getattr(response, "usage", None),
         )
 
 
-def create_model_client(config: ModelConfig) -> OpenAIModelClient | AnthropicModelClient:
+def create_model_client(
+    config: ModelConfig,
+    tracer: LLMTracer | None = None,
+) -> OpenAIModelClient | AnthropicModelClient:
     if config.provider == "openai":
         return OpenAIModelClient(
             model=config.model,
             max_output_tokens=config.max_output_tokens,
+            tracer=tracer,
         )
 
     if config.provider == "anthropic":
         return AnthropicModelClient(
             model=config.model,
             max_output_tokens=config.max_output_tokens,
+            tracer=tracer,
         )
 
     raise ValueError(f"Unsupported provider: {config.provider}")

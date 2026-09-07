@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from miniharness.agent import run_agent_loop
-from miniharness.config import AgentConfig, LabConfig, ModelConfig
+from miniharness.config import AgentConfig, DebugConfig, LabConfig, ModelConfig
 from miniharness.events import EventLogger
 from miniharness.tools import ToolRegistry
 from miniharness.types import Message, ModelTurn, ToolCall, ToolDefinition
@@ -16,6 +16,8 @@ class FakeAlwaysToolModel:
         self,
         messages: list[Message],
         tools: list[ToolDefinition],
+        *,
+        turn: int | None = None,
     ) -> ModelTurn:
         return ModelTurn(
             text="listing",
@@ -39,6 +41,8 @@ class FakeUnknownThenStopModel:
         self,
         messages: list[Message],
         tools: list[ToolDefinition],
+        *,
+        turn: int | None = None,
     ) -> ModelTurn:
         self.calls += 1
         if self.calls == 1:
@@ -73,6 +77,7 @@ def _config(tmp: Path, max_turns: int) -> LabConfig:
             max_output_tokens=128,
         ),
         agent=AgentConfig(max_turns=max_turns),
+        debug=DebugConfig(llm_trace="off"),
     )
 
 

@@ -8,10 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .agent import run_agent_loop
-from .config import load_config
+from .config import LabConfig, load_config
 from .events import EventLogger
 from .model import create_model_client
 from .tools import ToolRegistry
+from .trace import LLMTracer
 from .types import AgentRunResult
 
 
@@ -43,6 +44,43 @@ def emit_console(text: str) -> None:
         sys.stdout.write(payload.decode(encoding, errors="replace"))
 
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("task_file", type=Path)
+    parser.add_argument(
+        "--llm-trace",
+        action="store_true",
+        help="Write complete provider request/response payloads to llm_trace.jsonl",
+    )
+    parser.add_argument(
+        "--llm-trace-stdout",
+        action="store_true",
+        help="Print complete provider request/response payloads to stdout",
+    )
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.llm_trace and args.llm_trace_stdout:
+        parser.error("--llm-trace and --llm-trace-stdout cannot be used together")
+    return args
+
+
+def resolve_llm_trace_mode(args: argparse.Namespace, config: LabConfig) -> str:
+    if args.llm_trace:
+        return "file"
+    if args.llm_trace_stdout:
+        return "stdout"
+    return config.debug.llm_trace
+
+
+def make_tracer(mode: str, run_dir: Path) -> LLMTracer:
+    file_path = run_dir / "llm_trace.jsonl" if mode == "file" else None
+    return LLMTracer(mode=mode, file_path=file_path)
+
+
 def _write_summary(run_dir: Path, summary: dict) -> None:
     (run_dir / "summary.json").write_text(
         json.dumps(summary, indent=2),
@@ -50,7 +88,13 @@ def _write_summary(run_dir: Path, summary: dict) -> None:
     )
 
 
-def run_stage_00(task: str, config, events: EventLogger, run_dir: Path) -> None:
+def run_stage_00(
+    task: str,
+    config,
+    events: EventLogger,
+    run_dir: Path,
+    tracer: LLMTracer,
+) -> None:
     events.emit(
         "run_started",
         stage="00_model_only",
@@ -60,7 +104,7 @@ def run_stage_00(task: str, config, events: EventLogger, run_dir: Path) -> None:
     )
     events.emit("model_request", prompt_chars=len(task))
 
-    model = create_model_client(config.model)
+    model = create_model_client(config.model, tracer=tracer)
     result = model.generate(task)
 
     events.emit(
@@ -80,6 +124,7 @@ def run_stage_00(task: str, config, events: EventLogger, run_dir: Path) -> None:
             "input_tokens": result.input_tokens,
             "output_tokens": result.output_tokens,
             "outcome": "ungraded",
+            "llm_trace_mode": tracer.mode,
         },
     )
     events.emit("run_finished", outcome="ungraded")
@@ -87,7 +132,13 @@ def run_stage_00(task: str, config, events: EventLogger, run_dir: Path) -> None:
     emit_console(f"\nRun artifacts: {run_dir}")
 
 
-def run_stage_01(task: str, config, events: EventLogger, run_dir: Path) -> None:
+def run_stage_01(
+    task: str,
+    config,
+    events: EventLogger,
+    run_dir: Path,
+    tracer: LLMTracer,
+) -> None:
     events.emit(
         "run_started",
         stage="01_read_only_agent",
@@ -96,7 +147,7 @@ def run_stage_01(task: str, config, events: EventLogger, run_dir: Path) -> None:
         model=config.model.model,
     )
 
-    model = create_model_client(config.model)
+    model = create_model_client(config.model, tracer=tracer)
     registry = ToolRegistry(config.repo_root)
     result: AgentRunResult = run_agent_loop(
         task=task,
@@ -119,6 +170,7 @@ def run_stage_01(task: str, config, events: EventLogger, run_dir: Path) -> None:
             "input_tokens": result.input_tokens,
             "output_tokens": result.output_tokens,
             "outcome": result.outcome,
+            "llm_trace_mode": tracer.mode,
             **({"error": result.error} if result.error else {}),
         },
     )
@@ -129,24 +181,23 @@ def run_stage_01(task: str, config, events: EventLogger, run_dir: Path) -> None:
     emit_console(f"\nRun artifacts: {run_dir}")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("task_file", type=Path)
-    args = parser.parse_args()
-
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     task = args.task_file.read_text(encoding="utf-8")
     config = load_config()
     stage = infer_stage(args.task_file)
+    trace_mode = resolve_llm_trace_mode(args, config)
 
     run_dir = new_run_dir(config.runs_dir)
     events = EventLogger(run_dir)
+    tracer = make_tracer(trace_mode, run_dir)
     (run_dir / "task.md").write_text(task, encoding="utf-8")
 
     if stage == "01_read_only_agent":
-        run_stage_01(task, config, events, run_dir)
+        run_stage_01(task, config, events, run_dir, tracer)
         return
 
-    run_stage_00(task, config, events, run_dir)
+    run_stage_00(task, config, events, run_dir, tracer)
 
 
 if __name__ == "__main__":

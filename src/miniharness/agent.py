@@ -43,7 +43,7 @@ def run_agent_loop(
         )
 
         try:
-            model_turn: ModelTurn = model.generate_turn(messages, tools)
+            model_turn: ModelTurn = model.generate_turn(messages, tools, turn=turn)
         except Exception as exc:
             return AgentRunResult(
                 text=last_text,

@@ -128,3 +128,5 @@ Shell environment variables override `.env`. Every execution creates an immutabl
 Stage specifications from Stage 01 onward live in `specs/`.
 
 Stage 01 tool calling runs through the same AgentLoop on both the OpenAI Responses API and the Anthropic Messages API. See `specs/01a_anthropic_tool_calling_adapter.md`.
+
+Optional provider I/O tracing is documented in `specs/01b_llm_provider_io_trace.md`. It is off by default. `--llm-trace` writes `llm_trace.jsonl`; `--llm-trace-stdout` prints the same payloads. Raw LLM tracing can persist the complete context sent to a provider, including source code and tool outputs. Do not enable file tracing on sensitive workloads unless storing that data is acceptable.
