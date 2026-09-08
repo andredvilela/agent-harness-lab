@@ -11,7 +11,7 @@ from .agent import run_agent_loop
 from .config import LabConfig, load_config
 from .events import EventLogger
 from .model import create_model_client
-from .tools import ToolRegistry
+from .tools import STAGE_TOOLS, ToolRegistry
 from .trace import LLMTracer
 from .types import AgentRunResult
 
@@ -25,8 +25,9 @@ def new_run_dir(runs_dir: Path) -> Path:
 
 
 def infer_stage(task_file: Path) -> str:
-    if task_file.resolve().parent.name == "01_read_only_agent":
-        return "01_read_only_agent"
+    name = task_file.resolve().parent.name
+    if name in STAGE_TOOLS:
+        return name
     return "00_model_only"
 
 
@@ -132,7 +133,8 @@ def run_stage_00(
     emit_console(f"\nRun artifacts: {run_dir}")
 
 
-def run_stage_01(
+def run_agent_stage(
+    stage: str,
     task: str,
     config,
     events: EventLogger,
@@ -141,14 +143,17 @@ def run_stage_01(
 ) -> None:
     events.emit(
         "run_started",
-        stage="01_read_only_agent",
+        stage=stage,
         model_profile=config.model.profile,
         provider=config.model.provider,
         model=config.model.model,
     )
 
     model = create_model_client(config.model, tracer=tracer)
-    registry = ToolRegistry(config.repo_root)
+    registry = ToolRegistry(
+        config.repo_root,
+        enabled_tools=STAGE_TOOLS[stage],
+    )
     result: AgentRunResult = run_agent_loop(
         task=task,
         model=model,
@@ -161,7 +166,7 @@ def run_stage_01(
     _write_summary(
         run_dir,
         {
-            "stage": "01_read_only_agent",
+            "stage": stage,
             "model_profile": config.model.profile,
             "provider": config.model.provider,
             "model": config.model.model,
@@ -193,8 +198,8 @@ def main(argv: list[str] | None = None) -> None:
     tracer = make_tracer(trace_mode, run_dir)
     (run_dir / "task.md").write_text(task, encoding="utf-8")
 
-    if stage == "01_read_only_agent":
-        run_stage_01(task, config, events, run_dir, tracer)
+    if stage in STAGE_TOOLS:
+        run_agent_stage(stage, task, config, events, run_dir, tracer)
         return
 
     run_stage_00(task, config, events, run_dir, tracer)

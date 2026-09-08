@@ -9,7 +9,7 @@ from miniharness.model import (
     _openai_tools,
 )
 from miniharness.run import infer_stage
-from miniharness.tools import LIST_FILES, READ_FILE
+from miniharness.tools import LIST_FILES, READ_FILE, RUN_PYTEST
 from miniharness.types import Message, ToolCall, ToolResult
 from pathlib import Path
 
@@ -87,6 +87,26 @@ class AdapterMappingTests(unittest.TestCase):
         self.assertEqual(
             infer_stage(Path("scenarios/00_model_only/task.md")),
             "00_model_only",
+        )
+        self.assertEqual(
+            infer_stage(Path("scenarios/02_verify_only_agent/task.md")),
+            "02_verify_only_agent",
+        )
+
+    def test_openai_and_anthropic_map_run_pytest(self) -> None:
+        tools = [LIST_FILES, READ_FILE, RUN_PYTEST]
+        openai_names = [item["name"] for item in _openai_tools(tools)]
+        anthropic_mapped = _anthropic_tools(tools)
+        anthropic_names = [item["name"] for item in anthropic_mapped]
+        self.assertEqual(openai_names, ["list_files", "read_file", "run_pytest"])
+        self.assertEqual(anthropic_names, ["list_files", "read_file", "run_pytest"])
+        self.assertEqual(
+            anthropic_mapped[2]["input_schema"],
+            RUN_PYTEST.parameters,
+        )
+        self.assertEqual(
+            _openai_tools(tools)[2]["parameters"],
+            RUN_PYTEST.parameters,
         )
 
 

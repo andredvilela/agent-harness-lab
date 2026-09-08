@@ -97,31 +97,35 @@ Compare runs in `comparisons/00b_model_behavior_survey.md`. Classification is ma
 
 ### Setup
 
-```powershell
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e .
+Canonical workflow: `uv` manages the project-local `.venv` and locked dependencies.
+
+```bash
+uv sync
 ```
 
 Copy `.env.example` to `.env` and fill in provider keys. Select a profile with `MODEL_PROFILE`. Model IDs live in `config.toml`, not in `.env`.
 
+Activation of `.venv` is optional. Prefer `uv run` for all project commands.
+
 ### Run the four profiles
 
-```powershell
-$env:MODEL_PROFILE="openai_luna"
-python -m miniharness.run scenarios/00_model_only/task.md
+```bash
+MODEL_PROFILE=openai_luna uv run python -m miniharness.run scenarios/00_model_only/task.md
 
-$env:MODEL_PROFILE="openai_sol"
-python -m miniharness.run scenarios/00_model_only/task.md
+MODEL_PROFILE=openai_sol uv run python -m miniharness.run scenarios/00_model_only/task.md
 
-$env:MODEL_PROFILE="anthropic_haiku"
-python -m miniharness.run scenarios/00_model_only/task.md
+MODEL_PROFILE=anthropic_haiku uv run python -m miniharness.run scenarios/00_model_only/task.md
 
-$env:MODEL_PROFILE="anthropic_opus"
-python -m miniharness.run scenarios/00_model_only/task.md
+MODEL_PROFILE=anthropic_opus uv run python -m miniharness.run scenarios/00_model_only/task.md
 ```
 
 Shell environment variables override `.env`. Every execution creates an immutable folder under `runs/`.
+
+### Tests
+
+```bash
+uv run pytest
+```
 
 ## Specs
 

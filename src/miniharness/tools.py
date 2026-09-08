@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Callable
 
@@ -7,6 +10,9 @@ from .types import ToolCall, ToolDefinition, ToolResult
 
 SKIP_NAMES = {".env", ".venv", ".git", "__pycache__"}
 MAX_FILE_CHARS = 200_000
+MAX_TEST_OUTPUT_CHARS = 20_000
+PYTEST_TIMEOUT_SECONDS = 30
+TRUNCATION_MARKER = "... [output truncated by MiniHarness] ..."
 
 LIST_FILES = ToolDefinition(
     name="list_files",
@@ -41,6 +47,31 @@ READ_FILE = ToolDefinition(
         "required": ["path"],
     },
 )
+
+RUN_PYTEST = ToolDefinition(
+    name="run_pytest",
+    description="Run pytest for a repository-relative test target and return the real test result.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "description": (
+                    "Repository-relative pytest target, such as "
+                    "'fixtures/tiny_checkout/test_discount.py' or "
+                    "'fixtures/tiny_checkout/test_discount.py::test_percentage_discount'."
+                ),
+            }
+        },
+        "required": ["target"],
+    },
+)
+
+DEFAULT_TOOLS = ("list_files", "read_file")
+STAGE_TOOLS = {
+    "01_read_only_agent": ("list_files", "read_file"),
+    "02_verify_only_agent": ("list_files", "read_file", "run_pytest"),
+}
 
 
 class ToolError(Exception):
@@ -136,16 +167,115 @@ def read_file(repo_root: Path, arguments: dict[str, Any]) -> str:
     return text
 
 
+def truncate_output(text: str, max_chars: int = MAX_TEST_OUTPUT_CHARS) -> str:
+    if len(text) <= max_chars:
+        return text
+    available = max_chars - len(TRUNCATION_MARKER)
+    if available <= 0:
+        return TRUNCATION_MARKER[:max_chars]
+    head = available // 2
+    tail = available - head
+    return text[:head] + TRUNCATION_MARKER + text[-tail:]
+
+
+def _display_stream(text: str) -> str:
+    if not text:
+        return "(empty)"
+    return truncate_output(text)
+
+
+def _validate_pytest_target(repo_root: Path, target: object) -> str:
+    if not isinstance(target, str) or not target.strip():
+        raise ToolError("Invalid arguments: target must be a non-empty string")
+
+    target = target.strip()
+    for token in target.split():
+        if token.startswith("-"):
+            raise ToolError("Pytest flags are not allowed")
+
+    path_part, _sep, _selector = target.partition("::")
+    path_part = path_part.strip()
+    if not path_part:
+        raise ToolError(
+            "Invalid arguments: target must start with a repository-relative path"
+        )
+    if Path(path_part).is_absolute():
+        raise ToolError("Absolute paths are not allowed")
+
+    resolve_repo_path(repo_root, path_part)
+    return target
+
+
+def run_pytest(repo_root: Path, arguments: dict[str, Any]) -> str:
+    target = _validate_pytest_target(repo_root, arguments.get("target"))
+
+    if importlib.util.find_spec("pytest") is None:
+        raise ToolError("pytest unavailable")
+
+    argv = [
+        sys.executable,
+        "-m",
+        "pytest",
+        target,
+        "-q",
+        "-p",
+        "no:cacheprovider",
+    ]
+
+    try:
+        completed = subprocess.run(
+            argv,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=PYTEST_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ToolError(
+            f"pytest timed out after {PYTEST_TIMEOUT_SECONDS} seconds"
+        ) from exc
+    except OSError as exc:
+        raise ToolError(f"Failed to start pytest: {exc}") from exc
+
+    return (
+        f"pytest target: {target}\n"
+        f"exit_code: {completed.returncode}\n"
+        f"\n"
+        f"stdout:\n"
+        f"{_display_stream(completed.stdout)}\n"
+        f"\n"
+        f"stderr:\n"
+        f"{_display_stream(completed.stderr)}"
+    )
+
+
 class ToolRegistry:
-    def __init__(self, repo_root: Path):
+    def __init__(
+        self,
+        repo_root: Path,
+        enabled_tools: tuple[str, ...] | None = None,
+    ):
         self.repo_root = repo_root.resolve()
-        self._handlers: dict[str, Callable[[dict[str, Any]], str]] = {
+        names = enabled_tools if enabled_tools is not None else DEFAULT_TOOLS
+        handlers: dict[str, Callable[[dict[str, Any]], str]] = {
             "list_files": lambda args: list_files(self.repo_root, args),
             "read_file": lambda args: read_file(self.repo_root, args),
+            "run_pytest": lambda args: run_pytest(self.repo_root, args),
         }
+        definitions = {
+            "list_files": LIST_FILES,
+            "read_file": READ_FILE,
+            "run_pytest": RUN_PYTEST,
+        }
+        unknown = [name for name in names if name not in handlers]
+        if unknown:
+            raise ValueError(f"Unknown tools: {', '.join(unknown)}")
+        self._enabled = names
+        self._handlers = {name: handlers[name] for name in names}
+        self._definitions = [definitions[name] for name in names]
 
     def definitions(self) -> list[ToolDefinition]:
-        return [LIST_FILES, READ_FILE]
+        return list(self._definitions)
 
     def execute(self, call: ToolCall) -> ToolResult:
         handler = self._handlers.get(call.name)
