@@ -9,6 +9,8 @@ from typing import Any, Callable
 from .types import ToolCall, ToolDefinition, ToolResult
 
 SKIP_NAMES = {".env", ".venv", ".git", "__pycache__"}
+EXPERIMENTER_ONLY_ROOTS = ("lab", "runs")
+EXPERIMENTER_ONLY_DENIED = "Access denied: experimenter-only lab metadata."
 MAX_FILE_CHARS = 200_000
 MAX_TEST_OUTPUT_CHARS = 20_000
 PYTEST_TIMEOUT_SECONDS = 30
@@ -78,6 +80,17 @@ class ToolError(Exception):
     pass
 
 
+def is_experimenter_only_path(repo_root: Path, candidate: Path) -> bool:
+    root = repo_root.resolve()
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(root):
+        return False
+    rel = resolved.relative_to(root)
+    if not rel.parts:
+        return False
+    return rel.parts[0] in EXPERIMENTER_ONLY_ROOTS
+
+
 def resolve_repo_path(repo_root: Path, path: str) -> Path:
     if not isinstance(path, str) or not path.strip():
         raise ToolError("Invalid arguments: path must be a non-empty string")
@@ -90,6 +103,9 @@ def resolve_repo_path(repo_root: Path, path: str) -> Path:
 
     if candidate.name.lower() == ".env":
         raise ToolError(".env access denied")
+
+    if is_experimenter_only_path(root, candidate):
+        raise ToolError(EXPERIMENTER_ONLY_DENIED)
 
     return candidate
 
@@ -135,6 +151,8 @@ def list_files(repo_root: Path, arguments: dict[str, Any]) -> str:
                 raise ToolError(f"Cannot list directory: {rel}: {exc}") from exc
             for child in children:
                 if child.name.lower() in {name.lower() for name in SKIP_NAMES}:
+                    continue
+                if is_experimenter_only_path(root, child):
                     continue
                 walk(child, depth + 1)
             return

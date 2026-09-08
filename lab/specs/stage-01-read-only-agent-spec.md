@@ -144,8 +144,8 @@ Do not modify:
 ```text
 scenarios/00_model_only/task.md
 fixtures/tiny_checkout/
-failure_log/00_model_only.md
-failure_log/00b_model_behavior_survey.md
+lab/failure_log/00_model_only.md
+lab/failure_log/00b_model_behavior_survey.md
 ```
 
 Do not migrate or rewrite historical run artifacts.
@@ -788,7 +788,7 @@ Let the tool descriptions and task drive the behavior.
 Create:
 
 ```text
-failure_log/01_read_only_agent.md
+lab/failure_log/01_read_only_agent.md
 ```
 
 using the existing failure-log template.
@@ -830,18 +830,18 @@ From now on, stage specifications live outside the README.
 Create if needed:
 
 ```text
-specs/
+lab/specs/
 ```
 
 Store this specification as:
 
 ```text
-specs/01_read_only_agent.md
+lab/specs/01_read_only_agent.md
 ```
 
 The README should not receive a large new Stage 01 section.
 
-At most, add a short navigation reference to `specs/`.
+At most, add a short navigation reference to `lab/specs/`.
 
 Do not duplicate this spec into README.
 

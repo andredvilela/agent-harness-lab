@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from miniharness.tools import (
+    EXPERIMENTER_ONLY_DENIED,
     MAX_TEST_OUTPUT_CHARS,
     STAGE_TOOLS,
     TRUNCATION_MARKER,
@@ -33,6 +34,26 @@ def _repo(enabled_tools: tuple[str, ...] | None = None) -> tuple[Path, ToolRegis
 
 def _verify_repo() -> tuple[Path, ToolRegistry]:
     return _repo(enabled_tools=STAGE_TOOLS["02_verify_only_agent"])
+
+
+def _isolated_repo(
+    enabled_tools: tuple[str, ...] | None = None,
+) -> tuple[Path, ToolRegistry]:
+    root, registry = _repo(enabled_tools)
+    (root / "lab" / "docs").mkdir(parents=True)
+    (root / "lab" / "docs" / "agent_harness_lab_proposed_roadmap.md").write_text(
+        "EXPERIMENTER_ROADMAP_SECRET_BODY\n",
+        encoding="utf-8",
+    )
+    (root / "lab" / "specs").mkdir(parents=True)
+    (root / "lab" / "specs" / "hidden_stage_spec.md").write_text(
+        "EXPERIMENTER_SPEC_SECRET_BODY\n",
+        encoding="utf-8",
+    )
+    (root / "runs").mkdir()
+    (root / "runs" / "llm_trace.jsonl").write_text("{}\n", encoding="utf-8")
+    (root / "AGENTS.md").write_text("project guidance\n", encoding="utf-8")
+    return root, registry
 
 
 def _call(name: str, **arguments) -> ToolCall:
@@ -278,6 +299,128 @@ class RunPytestTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertIn(TRUNCATION_MARKER, result.output)
         self.assertIn("exit_code: 0", result.output)
+
+
+class ExperimentalIsolationTests(unittest.TestCase):
+    def test_root_listing_hides_experimenter_roots(self) -> None:
+        _root, registry = _isolated_repo()
+        result = registry.execute(_call("list_files", path=".", max_depth=4))
+        self.assertTrue(result.ok)
+        self.assertNotIn("lab", result.output)
+        self.assertNotIn("runs", result.output)
+        self.assertNotIn("hidden_stage_spec.md", result.output)
+        self.assertNotIn("agent_harness_lab_proposed_roadmap.md", result.output)
+        self.assertIn("AGENTS.md", result.output)
+        self.assertIn("fixtures/tiny_checkout/discount.py", result.output)
+
+    def test_direct_lab_listing_denied(self) -> None:
+        _root, registry = _isolated_repo()
+        result = registry.execute(_call("list_files", path="lab"))
+        self.assertFalse(result.ok)
+        self.assertEqual(result.output, EXPERIMENTER_ONLY_DENIED)
+
+    def test_direct_runs_listing_denied(self) -> None:
+        _root, registry = _isolated_repo()
+        result = registry.execute(_call("list_files", path="runs"))
+        self.assertFalse(result.ok)
+        self.assertEqual(result.output, EXPERIMENTER_ONLY_DENIED)
+
+    def test_read_lab_file_denied(self) -> None:
+        _root, registry = _isolated_repo()
+        result = registry.execute(
+            _call(
+                "read_file",
+                path="lab/docs/agent_harness_lab_proposed_roadmap.md",
+            )
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.output, EXPERIMENTER_ONLY_DENIED)
+        self.assertNotIn("EXPERIMENTER_ROADMAP_SECRET_BODY", result.output)
+
+    def test_read_runs_file_denied(self) -> None:
+        _root, registry = _isolated_repo()
+        result = registry.execute(_call("read_file", path="runs/llm_trace.jsonl"))
+        self.assertFalse(result.ok)
+        self.assertEqual(result.output, EXPERIMENTER_ONLY_DENIED)
+
+    def test_traversal_cannot_bypass_isolation(self) -> None:
+        _root, registry = _isolated_repo()
+        result = registry.execute(
+            _call(
+                "read_file",
+                path="fixtures/../lab/docs/agent_harness_lab_proposed_roadmap.md",
+            )
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.output, EXPERIMENTER_ONLY_DENIED)
+        self.assertNotIn("EXPERIMENTER_ROADMAP_SECRET_BODY", result.output)
+
+    def test_run_pytest_cannot_target_lab(self) -> None:
+        _root, registry = _isolated_repo(
+            enabled_tools=STAGE_TOOLS["02_verify_only_agent"]
+        )
+        with patch("miniharness.tools.subprocess.run") as mock_run:
+            result = registry.execute(
+                _call("run_pytest", target="lab/specs/hidden_stage_spec.md")
+            )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.output, EXPERIMENTER_ONLY_DENIED)
+        mock_run.assert_not_called()
+
+    def test_run_pytest_cannot_target_runs_via_traversal(self) -> None:
+        _root, registry = _isolated_repo(
+            enabled_tools=STAGE_TOOLS["02_verify_only_agent"]
+        )
+        with patch("miniharness.tools.subprocess.run") as mock_run:
+            result = registry.execute(
+                _call("run_pytest", target="fixtures/../runs/llm_trace.jsonl")
+            )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.output, EXPERIMENTER_ONLY_DENIED)
+        mock_run.assert_not_called()
+
+    def test_agent_facing_files_remain_available(self) -> None:
+        _root, registry = _isolated_repo()
+        agents = registry.execute(_call("read_file", path="AGENTS.md"))
+        self.assertTrue(agents.ok)
+        self.assertEqual(agents.output, "project guidance\n")
+
+        discount = registry.execute(
+            _call("read_file", path="fixtures/tiny_checkout/discount.py")
+        )
+        self.assertTrue(discount.ok)
+        self.assertEqual(discount.output, "PRICE = 1\n")
+
+        test_file = registry.execute(
+            _call("read_file", path="fixtures/tiny_checkout/test_discount.py")
+        )
+        self.assertTrue(test_file.ok)
+        self.assertIn("test_percentage_discount", test_file.output)
+
+    def test_env_protection_still_distinct(self) -> None:
+        _root, registry = _isolated_repo()
+        result = registry.execute(_call("read_file", path=".env"))
+        self.assertFalse(result.ok)
+        self.assertEqual(result.output, ".env access denied")
+
+    def test_stage_01_tool_set_unchanged(self) -> None:
+        self.assertEqual(STAGE_TOOLS["01_read_only_agent"], ("list_files", "read_file"))
+        _root, registry = _isolated_repo(
+            enabled_tools=STAGE_TOOLS["01_read_only_agent"]
+        )
+        names = [item.name for item in registry.definitions()]
+        self.assertEqual(names, ["list_files", "read_file"])
+
+    def test_stage_02_tool_set_unchanged(self) -> None:
+        self.assertEqual(
+            STAGE_TOOLS["02_verify_only_agent"],
+            ("list_files", "read_file", "run_pytest"),
+        )
+        _root, registry = _isolated_repo(
+            enabled_tools=STAGE_TOOLS["02_verify_only_agent"]
+        )
+        names = [item.name for item in registry.definitions()]
+        self.assertEqual(names, ["list_files", "read_file", "run_pytest"])
 
 
 if __name__ == "__main__":

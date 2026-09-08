@@ -1201,7 +1201,7 @@ Do not add a large new README stage section.
 Store this specification as:
 
 ```text
-specs/01a_anthropic_tool_calling_adapter.md
+lab/specs/01a_anthropic_tool_calling_adapter.md
 ```
 
 A very small README note is acceptable if provider support is currently documented there.

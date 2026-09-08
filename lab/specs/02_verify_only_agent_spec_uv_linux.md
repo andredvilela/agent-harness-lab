@@ -913,7 +913,7 @@ Observe whether the model runs pytest early or late, uses a specific test or who
 Create:
 
 ```text
-failure_log/02_verify_only_agent.md
+lab/failure_log/02_verify_only_agent.md
 ```
 
 Record:
